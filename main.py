@@ -210,11 +210,58 @@ async def analyze(
             ],
         )
 
-        output_text = response.output_text
+ output_text = response.output_text
 
-        parsed = extract_json(output_text)
+parsed = extract_json(output_text)
 
-        return TradeGuidanceResult(**parsed)
+final_action = str(parsed.get("final_action", "WAIT")).upper()
+confidence = float(parsed.get("confidence", 0))
+current_price = float(parsed.get("current_brti_price", 0))
+primary_strike = float(parsed.get("primary_strike", 0))
+backup_strike = float(parsed.get("safer_backup_strike", 0))
+
+distance_to_primary = abs(current_price - primary_strike)
+
+if confidence >= 80 and final_action in ["CALL", "PUT", "ANTICIPATE CALL", "ANTICIPATE PUT"]:
+    trade_readiness_banner = "🔥 TRADE READY"
+elif distance_to_primary <= 50 and final_action in ["WAIT", "PASS"]:
+    trade_readiness_banner = "⚠️ DANGER ZONE"
+elif confidence >= 55 and final_action in ["WAIT", "PASS"]:
+    trade_readiness_banner = "🧠 COMPRESSION"
+elif final_action == "PASS":
+    trade_readiness_banner = "🚫 PASS"
+else:
+    trade_readiness_banner = "⏳ WAIT"
+
+if "CALL" in final_action:
+    strike_side = "CALL"
+    best_strike_to_trade = primary_strike
+elif "PUT" in final_action:
+    strike_side = "PUT"
+    best_strike_to_trade = primary_strike
+else:
+    strike_side = "WAIT"
+    best_strike_to_trade = primary_strike if primary_strike > 0 else backup_strike
+
+if confidence >= 80:
+    confidence_color = "green"
+elif confidence >= 55:
+    confidence_color = "yellow"
+else:
+    confidence_color = "red"
+
+parsed["trade_readiness_banner"] = trade_readiness_banner
+parsed["best_strike_to_trade"] = best_strike_to_trade
+parsed["strike_side"] = strike_side
+parsed["strike_reason"] = (
+    f"Best strike derived from final_action={final_action}, "
+    f"confidence={confidence:.0f}, current_price={current_price}, "
+    f"primary_strike={primary_strike}, backup_strike={backup_strike}, "
+    f"distance_to_primary={distance_to_primary:.2f}."
+)
+parsed["confidence_color"] = confidence_color
+
+return TradeGuidanceResult(**parsed)
 
     except HTTPException:
         raise
