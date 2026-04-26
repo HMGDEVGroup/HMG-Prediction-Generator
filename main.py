@@ -51,6 +51,11 @@ class TradeGuidanceResult(BaseModel):
     position_size_guidance: str
     confidence: float
     final_action: str
+    trade_readiness_banner: str
+    best_strike_to_trade: float
+    strike_side: str
+    strike_reason: str
+    confidence_color: str
 
 
 def encode_image(image_bytes: bytes, content_type: str) -> str:
