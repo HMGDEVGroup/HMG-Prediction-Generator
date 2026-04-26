@@ -16,7 +16,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1")
 
 if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY is missing. Create a .env file or Render environment variable.")
+    raise RuntimeError(
+        "OPENAI_API_KEY is missing. Create a .env file or Render environment variable."
+    )
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -58,6 +60,8 @@ class TradeGuidanceResult(BaseModel):
     strike_reason: str
     confidence_color: str
 
+    narrative_analysis: str
+
 
 SYSTEM_PROMPT = """
 You are HMG Assistant's BRTI screenshot trade analysis engine.
@@ -96,6 +100,7 @@ This bot-engineering answer must drive every downstream decision:
 - invalidation_level
 - confidence
 - final_action
+- narrative_analysis
 
 Do not recommend CALL or PUT unless bot-engineered intent is clearly identified and supported by both:
 1. BRTI structure
@@ -170,6 +175,37 @@ Final action rules:
 - WAIT when structure is forming but not ready.
 - PASS when setup is poor, unclear, stale, contradictory, or unsafe.
 
+Narrative analysis style:
+Create a trader-style readout similar to the user's preferred analysis style.
+Use short sections, direct language, and practical trading interpretation.
+
+The narrative_analysis field must include these sections:
+
+1. 🧾 STRUCTURE ANALYSIS
+2. 📊 CURRENT PRICE
+3. 🔍 CONTRACT STRUCTURE
+4. 🧠 WHAT THE BOTS ARE ENGINEERING
+5. ⚖️ CURRENT MARKET STATE
+6. 📉 PRICE BEHAVIOR CONFIRMS IT
+7. 🎯 BOT INTENT
+8. ⚡ DOMINANCE READ
+9. 🚨 TRADE FRAMEWORK
+10. ❗ INVALIDATION LEVELS
+11. 🧾 ONE-LINE TRUTH
+12. FINAL CALL
+
+Narrative rules:
+- Do not overstate certainty.
+- If no A+ setup exists, clearly say WAIT or PASS.
+- Explain whether bots are pinning, rejecting, compressing, trapping, or expanding.
+- Explain the contract ladder using strong zones and rejection zones when visible.
+- Explain what confirms the read.
+- Explain what invalidates the read.
+- Use decisive but disciplined language.
+- Keep it useful for a trader looking at the next hourly contract.
+- Do not use markdown code fences.
+- Do not mention that you are an AI model.
+
 Return JSON only with this exact shape:
 {
   "report_time": "string",
@@ -190,7 +226,8 @@ Return JSON only with this exact shape:
   "invalidation_level": 0,
   "position_size_guidance": "string",
   "confidence": 0,
-  "final_action": "WAIT"
+  "final_action": "WAIT",
+  "narrative_analysis": "string"
 }
 
 Allowed final_action values:
@@ -198,7 +235,7 @@ CALL, PUT, WAIT, PASS, ANTICIPATE CALL, ANTICIPATE PUT.
 
 Important:
 Return JSON only.
-No markdown.
+No markdown outside JSON.
 No commentary outside JSON.
 """
 
@@ -241,8 +278,84 @@ def as_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def as_string(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+
+    return str(value)
+
+
+def build_fallback_narrative(parsed: Dict[str, Any]) -> str:
+    report_time = as_string(parsed.get("report_time", "Current"))
+    current_price = as_float(parsed.get("current_brti_price", 0))
+    primary_strike = as_float(parsed.get("primary_strike", 0))
+    backup_strike = as_float(parsed.get("safer_backup_strike", 0))
+    environment = as_string(parsed.get("environment", "NO TRADE"))
+    phase = as_string(parsed.get("phase", "Phase 1 Build Phase"))
+    bot_intent = as_string(parsed.get("bot_intent", "Bot intent is unclear."))
+    confirmation_mode = as_string(parsed.get("confirmation_mode", "WAIT for confirmation."))
+    anticipation_mode = as_string(parsed.get("anticipation_mode", "No valid anticipation."))
+    trap_detection = as_string(parsed.get("trap_detection", "No trap read available."))
+    early_exit = as_string(parsed.get("early_exit_detection", "No early exit read available."))
+    entry_reason = as_string(parsed.get("entry_reason", "No A+ entry identified."))
+    invalidation = as_float(parsed.get("invalidation_level", 0))
+    final_action = as_string(parsed.get("final_action", "WAIT")).upper()
+    confidence = as_float(parsed.get("confidence", 0))
+
+    price_text = f"${current_price:,.2f}" if current_price > 0 else "Unavailable"
+    primary_text = f"{primary_strike:,.0f}" if primary_strike > 0 else "Unavailable"
+    backup_text = f"{backup_strike:,.0f}" if backup_strike > 0 else "Unavailable"
+    invalidation_text = f"{invalidation:,.0f}" if invalidation > 0 else "Not clearly defined"
+
+    return f"""🧾 {report_time} — STRUCTURE ANALYSIS
+
+📊 CURRENT PRICE
+• {price_text}
+• Primary strike: {primary_text}
+• Safer backup strike: {backup_text}
+
+🔍 CONTRACT STRUCTURE
+• Active strike area: {primary_text}
+• Backup / safer reference: {backup_text}
+• The ladder must confirm direction before forcing a trade.
+
+🧠 WHAT THE BOTS ARE ENGINEERING
+{bot_intent}
+
+⚖️ CURRENT MARKET STATE
+• Environment: {environment}
+• Phase: {phase}
+• This is not automatically tradable unless dominance is clear.
+
+📉 PRICE BEHAVIOR CONFIRMS IT
+• Confirmation mode: {confirmation_mode}
+• Anticipation mode: {anticipation_mode}
+
+🎯 BOT INTENT
+{bot_intent}
+
+⚡ DOMINANCE READ
+• Confidence: {confidence:.0f}%
+• If confidence is below A+ territory, size stays small or the trade is skipped.
+
+🚨 TRADE FRAMEWORK
+• Final action: {final_action}
+• Entry reason: {entry_reason}
+
+❗ INVALIDATION LEVELS
+• Invalidation: {invalidation_text}
+• If invalidation is unclear or hit, do not hold emotionally.
+
+🧾 ONE-LINE TRUTH
+The system is reading bot-engineered structure first, then deciding whether the contract is tradable.
+
+FINAL CALL
+{final_action}
+"""
+
+
 def add_phase3_fields(parsed: Dict[str, Any]) -> Dict[str, Any]:
-    final_action = str(parsed.get("final_action", "WAIT")).upper()
+    final_action = as_string(parsed.get("final_action", "WAIT")).upper()
     confidence = as_float(parsed.get("confidence", 0))
     current_price = as_float(parsed.get("current_brti_price", 0))
     primary_strike = as_float(parsed.get("primary_strike", 0))
@@ -251,9 +364,9 @@ def add_phase3_fields(parsed: Dict[str, Any]) -> Dict[str, Any]:
     active_strike = primary_strike if primary_strike > 0 else backup_strike
     distance_to_active_strike = abs(current_price - active_strike) if active_strike > 0 else 999999
 
-    bot_intent = str(parsed.get("bot_intent", "")).lower()
-    trap_detection = str(parsed.get("trap_detection", "")).lower()
-    early_exit_detection = str(parsed.get("early_exit_detection", "")).lower()
+    bot_intent = as_string(parsed.get("bot_intent", "")).lower()
+    trap_detection = as_string(parsed.get("trap_detection", "")).lower()
+    early_exit_detection = as_string(parsed.get("early_exit_detection", "")).lower()
 
     has_trap_warning = (
         "trap" in trap_detection
@@ -324,6 +437,12 @@ def add_phase3_fields(parsed: Dict[str, Any]) -> Dict[str, Any]:
     )
     parsed["confidence_color"] = confidence_color
 
+    narrative = as_string(parsed.get("narrative_analysis", "")).strip()
+    if not narrative:
+        narrative = build_fallback_narrative(parsed)
+
+    parsed["narrative_analysis"] = narrative
+
     return parsed
 
 
@@ -332,7 +451,7 @@ async def root() -> dict:
     return {
         "status": "ok",
         "service": "HMG Prediction Generator",
-        "mode": "bot_engineering_first"
+        "mode": "bot_engineering_first_with_narrative_analysis",
     }
 
 
@@ -375,7 +494,7 @@ async def analyze(
                                 "Image 1 is the BRTI screenshot. "
                                 "Image 2 is the strike ladder screenshot. "
                                 "First answer internally: WHAT ARE THE BOTS ENGINEERING? "
-                                "Then return strict JSON only."
+                                "Then return strict JSON only, including narrative_analysis."
                             ),
                         },
                         {
